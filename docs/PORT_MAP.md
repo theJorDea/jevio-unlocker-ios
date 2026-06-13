@@ -43,5 +43,5 @@ OkHttp пинил DC-IP через DNS-override, сохраняя TLS SNI = до
 - `tcpFallback` (прямой TCP к DC :443) — заглушка в `MtProtoProxyServer.handleClient`.
 - `maskingRelay` (релей неудачного Fake-TLS пробинга к настоящему домену) — заглушка.
 - `resetConnections` на смену сети (Wi-Fi ↔ LTE) — добавить через `NWPathMonitor`.
-- routeCache (кэш рабочего эндпоинта) — добавить после того, как гонка заработает.
+- routeCache (кэш рабочего эндпоинта) — добавлен для WebSocket transport; сбрасывается при stop.
 - Quick Settings-аналог: виджет/App Intents/Shortcuts.

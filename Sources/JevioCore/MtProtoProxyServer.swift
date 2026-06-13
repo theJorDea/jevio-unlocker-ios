@@ -42,6 +42,8 @@ public final class MtProtoProxyServer {
     public private(set) var lastRoute = ""
     private var connectionCount = 0
     private let statsLock = NSLock()
+    private var routeCache: [String: WsCandidate] = [:]
+    private let routeLock = NSLock()
 
     // Web-front IPs that serve kwsN.web.telegram.org /apiws (NOT the raw MTProto IPs).
     private let wsFrontIps: [Int: String] = [
@@ -86,6 +88,7 @@ public final class MtProtoProxyServer {
         running = false
         listener?.cancel()
         listener = nil
+        routeLock.lock(); routeCache.removeAll(); routeLock.unlock()
         onLog("Прокси остановлен")
     }
 
@@ -95,6 +98,7 @@ public final class MtProtoProxyServer {
     }
     private func addUp(_ n: Int) { statsLock.lock(); bytesUp += Int64(n); statsLock.unlock() }
     private func addDown(_ n: Int) { statsLock.lock(); bytesDown += Int64(n); statsLock.unlock() }
+    private func setLastRoute(_ route: String) { statsLock.lock(); lastRoute = route; statsLock.unlock() }
 
     // MARK: - Per-client handling
 
@@ -178,8 +182,21 @@ public final class MtProtoProxyServer {
     // MARK: - WS transport racing
 
     private struct WsCandidate { let pinnedIp: String?; let host: String; let kind: String }
+    private struct WsConnection { let bridge: WebSocketBridge; let candidate: WsCandidate }
 
     private func connectAnyWs(dcId: Int, isMedia: Bool) async -> WebSocketBridge? {
+        let cacheKey = "\(dcId)/\(isMedia)"
+        if let cached = cachedRoute(for: cacheKey) {
+            let b = WebSocketBridge()
+            if await b.connect(pinnedIp: cached.pinnedIp, host: cached.host) {
+                setLastRoute(cached.kind)
+                onLog("WS reconnected via \(cached.host) (\(cached.kind), cached)")
+                return b
+            }
+            b.close()
+            clearCachedRoute(for: cacheKey)
+        }
+
         var candidates: [WsCandidate] = []
         let wsTargetIp = wsFrontIps[dcId] ?? wsFrontIps[2]!
         for domain in MtProtoHandshake.wsDomains(dc: dcId, isMedia: isMedia) {
@@ -192,25 +209,46 @@ public final class MtProtoProxyServer {
         onLog("connecting WS: racing \(candidates.count) endpoints (direct + Cloudflare)")
 
         // Race: first bridge to open wins, the rest are cancelled.
-        return await withTaskGroup(of: WebSocketBridge?.self) { group in
+        return await withTaskGroup(of: WsConnection?.self) { group in
             for c in candidates {
                 group.addTask {
                     let b = WebSocketBridge()
                     let ok = await b.connect(pinnedIp: c.pinnedIp, host: c.host)
-                    if ok { return b }
+                    if ok, !Task.isCancelled { return WsConnection(bridge: b, candidate: c) }
                     b.close(); return nil
                 }
             }
-            var winner: WebSocketBridge?
-            for await result in group {
-                if let b = result, winner == nil {
-                    winner = b
-                } else if let b = result {
-                    b.close() // a late opener — not needed
+            while let result = await group.next() {
+                if let result {
+                    group.cancelAll()
+                    setLastRoute(result.candidate.kind)
+                    cacheRoute(result.candidate, for: cacheKey)
+                    onLog("WS connected via \(result.candidate.host) (\(result.candidate.kind))")
+                    return result.bridge
                 }
             }
-            return winner
+            onLog("all WS endpoints failed")
+            return nil
         }
+    }
+
+    private func cachedRoute(for key: String) -> WsCandidate? {
+        routeLock.lock()
+        let route = routeCache[key]
+        routeLock.unlock()
+        return route
+    }
+
+    private func cacheRoute(_ route: WsCandidate, for key: String) {
+        routeLock.lock()
+        routeCache[key] = route
+        routeLock.unlock()
+    }
+
+    private func clearCachedRoute(for key: String) {
+        routeLock.lock()
+        routeCache.removeValue(forKey: key)
+        routeLock.unlock()
     }
 
     // MARK: - Bidirectional relay

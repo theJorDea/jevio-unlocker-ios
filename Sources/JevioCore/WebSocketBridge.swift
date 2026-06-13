@@ -34,12 +34,16 @@ public final class WebSocketBridge: NSObject, URLSessionWebSocketDelegate {
     /// Connect to wss://<host><path>. If `pinnedIp` is set, the TCP endpoint targets that IP
     /// while TLS SNI stays `host` (direct DC web-front). Returns true on open within `timeout`.
     public func connect(pinnedIp: String?, host: String, path: String = "/apiws", timeout: TimeInterval = 5) async -> Bool {
-        if isOpen { return true }
-        if pinnedIp == nil {
-            return await connectURLSession(host: host, path: path, timeout: timeout)
-        }
+        await withTaskCancellationHandler {
+            if isOpen { return true }
+            if pinnedIp == nil {
+                return await connectURLSession(host: host, path: path, timeout: timeout)
+            }
 
-        return await connectNetwork(pinnedIp: pinnedIp, host: host, path: path, timeout: timeout)
+            return await connectNetwork(pinnedIp: pinnedIp, host: host, path: path, timeout: timeout)
+        } onCancel: {
+            close()
+        }
     }
 
     private func connectNetwork(pinnedIp: String?, host: String, path: String, timeout: TimeInterval) async -> Bool {
