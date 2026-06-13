@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import Security
 
 /// iOS port of `WebSocketBridge` (Android `proxy/WebSocketBridge.kt`).
 ///
@@ -9,13 +10,15 @@ import Network
 /// name (SNI) to the real domain. For Cloudflare-fronted domains we pass the domain itself as
 /// the host so the system resolver handles it.
 ///
-/// NOTE: written against the Network.framework WebSocket API; compile & verify on the Mac.
-/// `sec_protocol_options_set_tls_server_name` is the key call that reproduces OkHttp's
-/// dns-override + SNI behaviour.
-public final class WebSocketBridge {
+/// Direct pinned-IP candidates use Network.framework for SNI control. Cloudflare candidates
+/// use URLSessionWebSocketTask so the `/apiws` resource path is part of the WebSocket handshake.
+public final class WebSocketBridge: NSObject, URLSessionWebSocketDelegate {
     private var connection: NWConnection?
+    private var urlSession: URLSession?
+    private var urlTask: URLSessionWebSocketTask?
     private var isOpen = false
     private var isClosed = false
+    private var openContinuation: CheckedContinuation<Bool, Never>?
 
     // Simple async inbox for received binary frames.
     private var inbox: [Data] = []
@@ -24,13 +27,22 @@ public final class WebSocketBridge {
 
     private let queue = DispatchQueue(label: "jevio.ws")
 
-    public init() {}
+    public override init() {
+        super.init()
+    }
 
     /// Connect to wss://<host><path>. If `pinnedIp` is set, the TCP endpoint targets that IP
     /// while TLS SNI stays `host` (direct DC web-front). Returns true on open within `timeout`.
     public func connect(pinnedIp: String?, host: String, path: String = "/apiws", timeout: TimeInterval = 5) async -> Bool {
         if isOpen { return true }
+        if pinnedIp == nil {
+            return await connectURLSession(host: host, path: path, timeout: timeout)
+        }
 
+        return await connectNetwork(pinnedIp: pinnedIp, host: host, path: path, timeout: timeout)
+    }
+
+    private func connectNetwork(pinnedIp: String?, host: String, path: String, timeout: TimeInterval) async -> Bool {
         // --- TLS options: pin SNI to the real domain (reproduces OkHttp dns-override + SNI) ---
         let tls = NWProtocolTLS.Options()
         sec_protocol_options_set_tls_server_name(tls.securityProtocolOptions, host)
@@ -53,12 +65,9 @@ public final class WebSocketBridge {
         let conn = NWConnection(host: endpointHost, port: 443, using: params)
         self.connection = conn
 
-        // The URL path is conveyed via a websocket metadata header on the first send for
-        // NWProtocolWebSocket; Network.framework derives the request target from the endpoint.
-        // We therefore rely on the default "/" unless the server needs an explicit resource —
-        // Telegram's /apiws is matched here by setting the request path through the connection
-        // endpoint below. (If path routing is required, switch to URLSessionWebSocketTask for
-        // the Cloudflare case; see PORT_MAP.md.)
+        // Network.framework gives us pinned-IP + SNI, but not an obvious public hook for the
+        // WebSocket resource path in this hostPort mode. Keep this path for direct candidates;
+        // Cloudflare candidates use URLSessionWebSocketTask, where `/apiws` is explicit.
         _ = path
 
         return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
@@ -86,6 +95,41 @@ public final class WebSocketBridge {
         }
     }
 
+    private func connectURLSession(host: String, path: String, timeout: TimeInterval) async -> Bool {
+        guard let url = URL(string: "wss://\(host)\(path)") else { return false }
+
+        var request = URLRequest(url: url)
+        request.addValue("binary", forHTTPHeaderField: "Sec-WebSocket-Protocol")
+        request.addValue("https://\(host)", forHTTPHeaderField: "Origin")
+
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = timeout
+
+        let session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
+        let task = session.webSocketTask(with: request)
+        self.urlSession = session
+        self.urlTask = task
+
+        return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+            lock.lock()
+            openContinuation = cont
+            lock.unlock()
+
+            task.resume()
+            queue.asyncAfter(deadline: .now() + timeout) { [weak self] in
+                self?.finishOpen(false)
+            }
+        }
+    }
+
+    private func finishOpen(_ ok: Bool) {
+        lock.lock()
+        let cont = openContinuation
+        openContinuation = nil
+        lock.unlock()
+        cont?.resume(returning: ok)
+    }
+
     private func receiveLoop() {
         guard let conn = connection else { return }
         conn.receiveMessage { [weak self] data, _, _, error in
@@ -93,6 +137,26 @@ public final class WebSocketBridge {
             if let data, !data.isEmpty { self.deliver(data) }
             if error != nil { self.deliver(nil); return }
             if !self.isClosed { self.receiveLoop() }
+        }
+    }
+
+    private func urlReceiveLoop() {
+        guard let task = urlTask else { return }
+        task.receive { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(.data(let data)):
+                if !data.isEmpty { self.deliver(data) }
+            case .success(.string(let text)):
+                if let data = text.data(using: .utf8), !data.isEmpty { self.deliver(data) }
+            case .failure:
+                self.markClosed()
+                return
+            @unknown default:
+                self.markClosed()
+                return
+            }
+            if !self.isClosed { self.urlReceiveLoop() }
         }
     }
 
@@ -108,9 +172,22 @@ public final class WebSocketBridge {
         lock.unlock()
     }
 
+    private func markClosed() {
+        isClosed = true
+        deliver(nil)
+        finishOpen(false)
+    }
+
     /// Send one binary WebSocket frame.
     @discardableResult
     public func send(_ data: Data) -> Bool {
+        if let task = urlTask, isOpen, !isClosed {
+            task.send(.data(data)) { [weak self] error in
+                if error != nil { self?.markClosed() }
+            }
+            return true
+        }
+
         guard let conn = connection, isOpen, !isClosed else { return false }
         let meta = NWProtocolWebSocket.Metadata(opcode: .binary)
         let ctx = NWConnection.ContentContext(identifier: "binary", metadata: [meta])
@@ -136,8 +213,26 @@ public final class WebSocketBridge {
         isClosed = true
         connection?.cancel()
         connection = nil
+        urlTask?.cancel(with: .normalClosure, reason: nil)
+        urlTask = nil
+        urlSession?.invalidateAndCancel()
+        urlSession = nil
         lock.lock()
         let pending = waiters; waiters.removeAll(); lock.unlock()
         pending.forEach { $0.resume(returning: nil) }
+        finishOpen(false)
+    }
+
+    public func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask,
+                           didOpenWithProtocol selectedProtocol: String?) {
+        isOpen = true
+        urlReceiveLoop()
+        finishOpen(true)
+    }
+
+    public func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask,
+                           didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
+                           reason: Data?) {
+        markClosed()
     }
 }

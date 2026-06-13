@@ -49,9 +49,8 @@ open JevioUnlocker.xcodeproj
 2. App Group `group.com.jevio.unlocker` и capability **Network Extensions** включи в обоих таргетах.
 3. Юнит-тесты ядра гоняются в симуляторе без подписи: схема `JevioUnlocker` → тест `JevioCoreTests`.
 
-> CI лежит в `ci/build.yml` (а не в `.github/workflows/`), потому что push воркфлоу-файлов
-> через GitHub App заблокирован. Чтобы включить Actions:
-> `mkdir -p .github/workflows && git mv ci/build.yml .github/workflows/build.yml && git commit -m "ci: enable" && git push`
+CI включён в `.github/workflows/build.yml`: workflow генерирует Xcode-проект, гоняет
+`JevioCoreTests` на iOS Simulator и собирает приложение без code signing.
 
 ## ⚠️ Что нужно для теста на реальном айфоне
 
