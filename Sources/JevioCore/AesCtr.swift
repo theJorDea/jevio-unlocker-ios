@@ -41,12 +41,13 @@ public final class AesCtr {
     @discardableResult
     public func update(_ data: Data) -> Data {
         guard let cryptor, !data.isEmpty else { return Data() }
-        var out = Data(count: data.count)
+        let outCapacity = data.count
+        var out = Data(count: outCapacity)
         var moved = 0
         _ = out.withUnsafeMutableBytes { outPtr in
             data.withUnsafeBytes { inPtr in
                 CCCryptorUpdate(cryptor, inPtr.baseAddress, data.count,
-                                outPtr.baseAddress, out.count, &moved)
+                                outPtr.baseAddress, outCapacity, &moved)
             }
         }
         if moved < out.count { out.removeSubrange(moved..<out.count) }
