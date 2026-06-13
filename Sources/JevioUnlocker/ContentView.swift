@@ -82,7 +82,7 @@ struct ContentView: View {
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .textFieldStyle(.roundedBorder)
-                .onChange(of: settings.fakeTlsDomain) { _, _ in settings.save() }
+                .onChange(of: settings.fakeTlsDomain) { _ in settings.save() }
         }
         .padding()
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
