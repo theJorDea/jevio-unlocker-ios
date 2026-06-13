@@ -44,6 +44,18 @@ public final class MtProtoProxyServer {
     private let statsLock = NSLock()
     private var routeCache: [String: WsCandidate] = [:]
     private let routeLock = NSLock()
+    private var activeClients: [ObjectIdentifier: ClientConnection] = [:]
+    private let clientsLock = NSLock()
+
+    // Raw MTProto core IPs, used only for the TCP fallback on port 443.
+    private let dcDefaultIps: [Int: String] = [
+        1: "149.154.175.50",
+        2: "149.154.167.51",
+        3: "149.154.175.100",
+        4: "149.154.167.91",
+        5: "149.154.171.5",
+        203: "91.105.192.100"
+    ]
 
     // Web-front IPs that serve kwsN.web.telegram.org /apiws (NOT the raw MTProto IPs).
     private let wsFrontIps: [Int: String] = [
@@ -89,7 +101,20 @@ public final class MtProtoProxyServer {
         listener?.cancel()
         listener = nil
         routeLock.lock(); routeCache.removeAll(); routeLock.unlock()
+        let clients = snapshotClients(clear: true)
+        clients.forEach { $0.close() }
         onLog("Прокси остановлен")
+    }
+
+    /// Drop active sessions so Telegram reconnects through the local proxy on a fresh route.
+    /// Called by the packet tunnel when iOS reports a network path change.
+    public func resetConnections() {
+        routeLock.lock(); routeCache.removeAll(); routeLock.unlock()
+        let clients = snapshotClients(clear: true)
+        clients.forEach { $0.close() }
+        if !clients.isEmpty {
+            onLog("Сеть изменилась — переподключаю (\(clients.count))")
+        }
     }
 
     private func bumpConnections(_ delta: Int) {
@@ -99,15 +124,30 @@ public final class MtProtoProxyServer {
     private func addUp(_ n: Int) { statsLock.lock(); bytesUp += Int64(n); statsLock.unlock() }
     private func addDown(_ n: Int) { statsLock.lock(); bytesDown += Int64(n); statsLock.unlock() }
     private func setLastRoute(_ route: String) { statsLock.lock(); lastRoute = route; statsLock.unlock() }
+    private func addClient(_ client: ClientConnection) {
+        clientsLock.lock(); activeClients[ObjectIdentifier(client)] = client; clientsLock.unlock()
+    }
+    private func removeClient(_ client: ClientConnection) {
+        clientsLock.lock(); activeClients.removeValue(forKey: ObjectIdentifier(client)); clientsLock.unlock()
+    }
+    private func snapshotClients(clear: Bool) -> [ClientConnection] {
+        clientsLock.lock()
+        let clients = Array(activeClients.values)
+        if clear { activeClients.removeAll() }
+        clientsLock.unlock()
+        return clients
+    }
 
     // MARK: - Per-client handling
 
     private func accept(_ conn: NWConnection) {
         guard running else { conn.cancel(); return }
         let client = ClientConnection(conn, queue: queue)
+        addClient(client)
         bumpConnections(1)
         Task {
             await self.handleClient(client)
+            self.removeClient(client)
             self.bumpConnections(-1)
         }
     }
@@ -166,7 +206,12 @@ public final class MtProtoProxyServer {
                                                           secret: secret, relayInit: relayInit)
 
             guard let bridge = await connectAnyWs(dcId: result.dcId, isMedia: result.isMedia) else {
-                onLog("WS connection failed (TCP fallback TODO)")  // TODO: tcpFallback
+                onLog("WS connection failed, trying TCP fallback")
+                let fallbackIp = dcDefaultIps[result.dcId] ?? dcDefaultIps[2]!
+                let fallbackOk = await tcpFallback(client: client, deframer: deframer,
+                                                   ctx: ctx, relayInit: relayInit,
+                                                   targetIp: fallbackIp)
+                if !fallbackOk { onLog("TCP fallback failed") }
                 return
             }
 
@@ -287,6 +332,96 @@ public final class MtProtoProxyServer {
         }
         bridge.close()
         onLog("DC\(dc)\(isMedia ? "m" : "") session closed")
+    }
+
+    // MARK: - TCP fallback
+
+    private func tcpFallback(client: ClientConnection, deframer: FakeTlsDeframer?,
+                             ctx: CryptoContext, relayInit: Data, targetIp: String) async -> Bool {
+        guard let remote = await connectTcp(host: targetIp, port: 443) else { return false }
+        defer { remote.cancel() }
+
+        setLastRoute("tcp")
+        sendTcp(remote, relayInit)
+
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+                do {
+                    while self.running {
+                        let raw = try await client.read(deframer: deframer)
+                        if raw.isEmpty { break }
+                        self.addUp(raw.count)
+                        let plain = ctx.cltDecryptor.update(raw)
+                        let reenc = ctx.tgEncryptor.update(plain)
+                        self.sendTcp(remote, reenc)
+                    }
+                } catch { /* client closed */ }
+            }
+            group.addTask {
+                while self.running {
+                    guard let data = await self.receiveTcp(remote) else { break }
+                    self.addDown(data.count)
+                    let plain = ctx.tgDecryptor.update(data)
+                    let enc = ctx.cltEncryptor.update(plain)
+                    client.writeFramed(enc, deframer: deframer)
+                }
+            }
+            await group.next()
+            group.cancelAll()
+        }
+        return true
+    }
+
+    private func connectTcp(host: String, port: UInt16, timeout: TimeInterval = 5) async -> NWConnection? {
+        let tcp = NWProtocolTCP.Options()
+        tcp.connectionTimeout = Int(timeout)
+        tcp.noDelay = true
+        let params = NWParameters(tls: nil, tcp: tcp)
+        let conn = NWConnection(host: NWEndpoint.Host(host),
+                                port: NWEndpoint.Port(rawValue: port)!,
+                                using: params)
+
+        return await withCheckedContinuation { (cont: CheckedContinuation<NWConnection?, Never>) in
+            let lock = NSLock()
+            var resumed = false
+            func finish(_ result: NWConnection?) {
+                lock.lock()
+                if resumed { lock.unlock(); return }
+                resumed = true
+                lock.unlock()
+                cont.resume(returning: result)
+            }
+            conn.stateUpdateHandler = { state in
+                switch state {
+                case .ready:
+                    finish(conn)
+                case .failed, .cancelled:
+                    finish(nil)
+                default:
+                    break
+                }
+            }
+            conn.start(queue: queue)
+            queue.asyncAfter(deadline: .now() + timeout) {
+                finish(nil)
+            }
+        }
+    }
+
+    private func sendTcp(_ conn: NWConnection, _ data: Data) {
+        conn.send(content: data, completion: .contentProcessed { _ in })
+    }
+
+    private func receiveTcp(_ conn: NWConnection) async -> Data? {
+        await withCheckedContinuation { (cont: CheckedContinuation<Data?, Never>) in
+            conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, isComplete, error in
+                if error != nil || isComplete {
+                    cont.resume(returning: nil)
+                    return
+                }
+                cont.resume(returning: data?.isEmpty == false ? data : nil)
+            }
+        }
     }
 }
 

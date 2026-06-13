@@ -49,11 +49,11 @@ Jevio Unlocker — это локальный MTProto-прокси для iOS, у
 - **Фаза 0 (готово):** скелет репо, ядро + тесты, UI, extension, CI.
 - **Фаза 1 (в работе):** валидация протокола на ПК (десктоп Telegram → локальный прокси), подбор транспортов.
   Cloudflare `/apiws` переведён на `URLSessionWebSocketTask`; direct pinned-IP/SNI через Network.framework
-  остаётся на проверку.
+  остаётся на проверку. Добавлены routeCache и TCP fallback к DC `:443`.
 - **Фаза 2:** сборка на Mac, прогон `JevioCoreTests`, фикс компиляции сетевого слоя.
 - **Фаза 3 (нужен платный Apple Dev):** запуск туннеля на iPhone, настройка
   `NEPacketTunnelNetworkSettings`, фоновая живучесть, реконнект на смене сети (`NWPathMonitor`).
-- **Фаза 4:** TCP-fallback, masking-relay, routeCache, виджет/Shortcuts, авто-реконнект.
+- **Фаза 4:** masking-relay, виджет/Shortcuts, улучшение авто-реконнекта.
 - **Фаза 5 (опц.):** «Архитектура B» — прозрачный туннель (route DC subnets), без `tg://proxy`.
 
 См. `PORT_MAP.md` для построчного соответствия с Android и списка открытых вопросов.

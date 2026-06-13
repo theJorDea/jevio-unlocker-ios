@@ -9,9 +9,9 @@
 | `proxy/FakeTls.kt` | `JevioCore/FakeTls.swift` | ✅ порт, тесты |
 | `proxy/MsgSplitter.kt` | `JevioCore/MsgSplitter.swift` | ✅ порт, тесты |
 | `javax.crypto Cipher("AES/CTR")` | `JevioCore/AesCtr.swift` (CommonCrypto kCCModeCTR) | ✅ порт, тест |
-| `proxy/WebSocketBridge.kt` (OkHttp) | `JevioCore/WebSocketBridge.swift` (Network.framework) | ⚠️ нужна сборка/проверка |
-| `proxy/MtProtoProxyServer.kt` (ServerSocket) | `JevioCore/MtProtoProxyServer.swift` + `ClientConnection.swift` (NWListener) | ⚠️ нужна сборка/проверка |
-| `service/ProxyService.kt` (foreground service) | `PacketTunnel/PacketTunnelProvider.swift` | ⚠️ нужна сборка/проверка на устройстве |
+| `proxy/WebSocketBridge.kt` (OkHttp) | `JevioCore/WebSocketBridge.swift` (Network.framework + URLSession) | ⚠️ сборка проходит, нужна полевая проверка |
+| `proxy/MtProtoProxyServer.kt` (ServerSocket) | `JevioCore/MtProtoProxyServer.swift` + `ClientConnection.swift` (NWListener) | ⚠️ сборка проходит, нужна полевая проверка |
+| `service/ProxyService.kt` (foreground service) | `PacketTunnel/PacketTunnelProvider.swift` | ⚠️ сборка проходит, нужна проверка на устройстве |
 | `service/ProxyTileService.kt` (Quick Settings) | — (виджет/Shortcuts) | ⬜ TODO |
 | `ui/MainScreen.kt` + `ProxyViewModel.kt` (Compose) | `JevioUnlocker/ContentView.swift` + `TunnelController.swift` | ✅ базовый UI |
 
@@ -39,9 +39,9 @@ OkHttp пинил DC-IP через DNS-override, сохраняя TLS SNI = до
 - **route Telegram DC subnets** в туннель (тогда даже без `tg://proxy` трафик можно перехватывать —
   это путь к «Архитектуре B», прозрачному туннелю).
 
-### Не портировано (TODO первой итерации)
-- `tcpFallback` (прямой TCP к DC :443) — заглушка в `MtProtoProxyServer.handleClient`.
+### Оставшиеся и недавно закрытые пункты первой итерации
+- `tcpFallback` (прямой TCP к DC :443) — добавлен как fallback после неудачной WS-гонки.
 - `maskingRelay` (релей неудачного Fake-TLS пробинга к настоящему домену) — заглушка.
-- `resetConnections` на смену сети (Wi-Fi ↔ LTE) — добавить через `NWPathMonitor`.
+- `resetConnections` на смену сети (Wi-Fi ↔ LTE) — добавлен через `NWPathMonitor` в Packet Tunnel.
 - routeCache (кэш рабочего эндпоинта) — добавлен для WebSocket transport; сбрасывается при stop.
 - Quick Settings-аналог: виджет/App Intents/Shortcuts.

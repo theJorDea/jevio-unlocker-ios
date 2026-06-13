@@ -1,4 +1,5 @@
 import NetworkExtension
+import Network
 import JevioCore
 
 /// The Network Extension that hosts the local MTProto proxy in the background.
@@ -13,6 +14,8 @@ import JevioCore
 /// routing Telegram DC subnets). Verify on device with a paid Apple Developer account.
 class PacketTunnelProvider: NEPacketTunnelProvider {
     private var proxy: MtProtoProxyServer?
+    private var pathMonitor: NWPathMonitor?
+    private let pathQueue = DispatchQueue(label: "jevio.path")
 
     override func startTunnel(options: [String: NSObject]?,
                               completionHandler: @escaping (Error?) -> Void) {
@@ -39,6 +42,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
             if let error { completionHandler(error); return }
             do {
                 try server.start()
+                self.startPathMonitor(for: server)
                 completionHandler(nil)
             } catch {
                 completionHandler(error)
@@ -48,8 +52,26 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
 
     override func stopTunnel(with reason: NEProviderStopReason,
                              completionHandler: @escaping () -> Void) {
+        pathMonitor?.cancel()
+        pathMonitor = nil
         proxy?.stop()
         proxy = nil
         completionHandler()
+    }
+
+    private func startPathMonitor(for server: MtProtoProxyServer) {
+        pathMonitor?.cancel()
+        let monitor = NWPathMonitor()
+        var seenInitialPath = false
+        monitor.pathUpdateHandler = { path in
+            guard path.status == .satisfied else { return }
+            if seenInitialPath {
+                server.resetConnections()
+            } else {
+                seenInitialPath = true
+            }
+        }
+        monitor.start(queue: pathQueue)
+        pathMonitor = monitor
     }
 }
