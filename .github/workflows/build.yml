@@ -1,0 +1,36 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Run core unit tests (simulator)
+        run: |
+          xcodebuild test \
+            -project JevioUnlocker.xcodeproj \
+            -scheme JevioUnlocker \
+            -destination 'platform=iOS Simulator,name=iPhone 15' \
+            -only-testing:JevioCoreTests \
+            CODE_SIGNING_ALLOWED=NO | xcpretty || true
+
+      - name: Build app (no signing)
+        run: |
+          xcodebuild build \
+            -project JevioUnlocker.xcodeproj \
+            -scheme JevioUnlocker \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO
