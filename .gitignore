@@ -1,0 +1,20 @@
+# Xcode / generated project
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+DerivedData/
+build/
+*.xcuserstate
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# macOS
+.DS_Store
+
+# Signing / secrets (never commit)
+*.mobileprovision
+*.p12
+*.cer
+ExportOptions.plist

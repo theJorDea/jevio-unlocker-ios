@@ -1,0 +1,70 @@
+name: JevioUnlocker
+options:
+  bundleIdPrefix: com.jevio.unlocker
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.9"
+    DEVELOPMENT_TEAM: ""          # ← put your paid Apple Developer Team ID here
+    CODE_SIGN_STYLE: Automatic
+
+targets:
+  # Shared protocol/crypto core, linked by both the app and the extension.
+  JevioCore:
+    type: framework
+    platform: iOS
+    sources: [Sources/JevioCore]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jevio.unlocker.JevioCore
+
+  # Main SwiftUI app.
+  JevioUnlocker:
+    type: application
+    platform: iOS
+    sources: [Sources/JevioUnlocker]
+    dependencies:
+      - target: JevioCore
+      - target: PacketTunnel
+        embed: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jevio.unlocker
+        INFOPLIST_FILE: Sources/JevioUnlocker/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Sources/JevioUnlocker/JevioUnlocker.entitlements
+
+  # Network Extension (Packet Tunnel) that hosts the local proxy.
+  PacketTunnel:
+    type: app-extension
+    platform: iOS
+    sources: [Sources/PacketTunnel]
+    dependencies:
+      - target: JevioCore
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jevio.unlocker.PacketTunnel
+        INFOPLIST_FILE: Sources/PacketTunnel/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Sources/PacketTunnel/PacketTunnel.entitlements
+
+  # Unit tests for the deterministic core (run on macOS/simulator, no entitlements needed).
+  JevioCoreTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [Tests/JevioCoreTests]
+    dependencies:
+      - target: JevioCore
+
+schemes:
+  JevioUnlocker:
+    build:
+      targets:
+        JevioUnlocker: all
+    run:
+      config: Debug
+    test:
+      targets: [JevioCoreTests]
