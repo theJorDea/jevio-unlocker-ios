@@ -41,7 +41,7 @@ OkHttp пинил DC-IP через DNS-override, сохраняя TLS SNI = до
 
 ### Оставшиеся и недавно закрытые пункты первой итерации
 - `tcpFallback` (прямой TCP к DC :443) — добавлен как fallback после неудачной WS-гонки.
-- `maskingRelay` (релей неудачного Fake-TLS пробинга к настоящему домену) — заглушка.
+- `maskingRelay` (релей неудачного Fake-TLS пробинга к настоящему домену) — добавлен best-effort.
 - `resetConnections` на смену сети (Wi-Fi ↔ LTE) — добавлен через `NWPathMonitor` в Packet Tunnel.
 - routeCache (кэш рабочего эндпоинта) — добавлен для WebSocket transport; сбрасывается при stop.
 - Quick Settings-аналог: виджет/App Intents/Shortcuts.

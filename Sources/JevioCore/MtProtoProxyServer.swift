@@ -169,7 +169,8 @@ public final class MtProtoProxyServer {
                 let clientHello = firstByte + hdrRest + body
 
                 guard let verified = FakeTls.verifyClientHello(clientHello, secret: secret) else {
-                    onLog("Fake TLS verify failed → drop")   // TODO: masking relay to real domain
+                    onLog("Fake TLS verify failed → masking")
+                    await maskingRelay(client: client, initialData: clientHello)
                     return
                 }
                 let serverHello = FakeTls.buildServerHello(secret: secret,
@@ -332,6 +333,37 @@ public final class MtProtoProxyServer {
         }
         bridge.close()
         onLog("DC\(dc)\(isMedia ? "m" : "") session closed")
+    }
+
+    // MARK: - Fake TLS masking relay
+
+    private func maskingRelay(client: ClientConnection, initialData: Data) async {
+        guard !config.fakeTlsDomain.isEmpty,
+              let remote = await connectTcp(host: config.fakeTlsDomain, port: 443) else {
+            return
+        }
+        defer { remote.cancel() }
+
+        sendTcp(remote, initialData)
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+                do {
+                    while self.running {
+                        let data = try await client.read(deframer: nil)
+                        if data.isEmpty { break }
+                        self.sendTcp(remote, data)
+                    }
+                } catch { /* client closed */ }
+            }
+            group.addTask {
+                while self.running {
+                    guard let data = await self.receiveTcp(remote) else { break }
+                    client.write(data)
+                }
+            }
+            await group.next()
+            group.cancelAll()
+        }
     }
 
     // MARK: - TCP fallback
